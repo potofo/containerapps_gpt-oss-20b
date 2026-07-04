@@ -1,0 +1,12 @@
+# Claude Code のローカル実行状態（ロックファイル等）はリポジトリに含めない
+.claude/
+
+# 環境変数ファイル（秘密情報を含むため）
+.env
+
+# deploy.ps1が生成するデプロイ結果ファイル（API_Keyを含む秘密情報のため）
+result-endpoint.md
+
+# Microsoft Learn からダウンロードした参考資料（"Azure Container Apps サーバーレス GPU に
+# Ollama を使用して OpenAI gpt-oss モデルをデプロイする"系のドキュメント）はリポジトリに含めない
+Azure Container Apps サーバーレス GPU に Ollama を使用して OpenAI gpt-oss モデルをデプロイする*
