@@ -9,6 +9,8 @@ The Container App runs two containers in the same replica:
 
 This means every request to the public endpoint must include a valid API key, even though Ollama has no built-in authentication.
 
+<img src="docs/images/architecture-diagram.png" alt="Architecture diagram: resource group, Container Apps environment (GPU workload profile), and the Container App with the Ollama and nginx auth-proxy containers" width="600">
+
 > 日本語版は [README.ja-JP.md](README.ja-JP.md) を参照してください。
 
 ## Prerequisites
