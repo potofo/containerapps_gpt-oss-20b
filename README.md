@@ -81,6 +81,25 @@ Any other region/GPU combination is rejected before any Azure resources are crea
 
 Re-running `.\deploy.ps1` is safe: existing resources (resource group, environment, workload profile, Container App) are reused/updated rather than recreated.
 
+### Choosing the model
+
+This deployment is model-agnostic: set `OLLAMA_MODEL` in `.env` to any model tag available at [ollama.com/library](https://ollama.com/library) and redeploy — the startup command runs `ollama pull` / `ollama run` for whatever you specify. The auth proxy, API key, and `chat.py` all work unchanged with any model.
+
+The only real constraint is GPU VRAM. The T4 profile has 16 GB and the A100 profile has 80 GB; set `AZURE_GPU_TYPE` accordingly. Approximate fit (Q4 quantization):
+
+| Model size | VRAM (approx) | T4 (16 GB) | A100 (80 GB) |
+|---|---|:---:|:---:|
+| 7B (e.g. `qwen2.5:7b`) | ~5 GB | ✅ | ✅ |
+| 14B (`qwen2.5:14b`) | ~9 GB | ✅ | ✅ |
+| `gpt-oss:20b` (default) | ~13 GB | ✅ (tight) | ✅ |
+| 30–32B (`qwen3:30b`) | ~18–22 GB | ❌ | ✅ |
+| 70–72B (`qwen2.5:72b`) | ~40–45 GB | ❌ | ✅ |
+| Kimi K2 (1T-param MoE) | hundreds of GB | ❌ | ❌ (too large) |
+
+Examples you can set: `gpt-oss:20b` (default), `qwen3:8b`, `qwen2.5:7b`, `qwen2.5:14b`, `qwen2.5-coder:7b`, `qwen3:30b` (A100), `qwen2.5:72b` (A100), `gemma3`, `llama3.1`, etc.
+
+Note: after switching models, the first request triggers a cold start (the new model is pulled and loaded), so it can take a while.
+
 ## Usage
 
 `deploy.ps1` writes the public endpoint URL, API key, model name, and (once the model is ready) a `curl` example to `result-endpoint.md` in the project root. This file contains a secret (the API key) and is excluded from version control via `.gitignore`.
@@ -123,6 +142,37 @@ This deployment is designed to cost (almost) nothing while idle:
 To guarantee zero ongoing cost, delete the resources with `teardown.ps1` (see [Cleanup](#cleanup) below).
 
 See [Billing in Azure Container Apps](https://learn.microsoft.com/azure/container-apps/billing) and [Using serverless GPUs](https://learn.microsoft.com/azure/container-apps/gpu-serverless-overview) for details.
+
+## Private access over a private endpoint (optional, advanced)
+
+By default this deployment exposes a **public** HTTPS endpoint protected by the API key (see [Usage](#usage)). If you instead need to reach the app privately — for example from on-premises over **ExpressRoute** or from within an Azure VNet — you can put the Container Apps environment behind a **private endpoint**. This is configured on the **environment**, not on the app's ingress, and is **not automated by `deploy.ps1`**.
+
+Key facts (verified against current Azure docs):
+
+- **A custom domain is NOT required.** You can keep the app's default FQDN (`<app>.<region>.azurecontainerapps.io`); it only needs to resolve to the private endpoint's private IP via a **private DNS zone**. A custom domain is relevant only if you want your own hostname (for an apex/A-record custom domain you point it at the private endpoint IP; a CNAME custom domain is unchanged).
+- Private endpoints are supported on **workload profiles environments** (the type this project creates) and **do not require the environment to be VNet-integrated**.
+- The app's ingress can stay **external**; disabling public network access at the **environment** level is what makes access private.
+- **Internal (VNet/ILB) environments** can only be selected at environment creation time. For this already-created external environment, the **private endpoint** approach is the way to add private access without recreating it.
+
+Where to configure it (Azure portal):
+
+1. Open the **Container Apps environment** (`cae-ollama-gptoss20b`) → **Networking**.
+2. Set **Public network access** to **Disabled**. A **Private endpoint** section then appears. (Once a private endpoint is configured, public access cannot be re-enabled — the two are mutually exclusive.)
+3. Under **Private endpoint**, add one:
+   - Place it in your **VNet + subnet** (the subnet must be **/27 or larger**).
+   - Enable **private DNS zone** integration so the default FQDN resolves to the private IP.
+
+Prerequisites for actual use:
+
+- An Azure **VNet + subnet (/27 or larger)** to host the private endpoint.
+- For on-premises access: an **ExpressRoute** circuit with **private peering**, a connection to that VNet, and on-premises DNS able to resolve the private DNS zone (e.g. via a DNS forwarder).
+
+Caveats:
+
+- Disabling public network access **blocks internet access** — the public `curl` / `chat.py` examples above will no longer reach the app except from within the VNet or over ExpressRoute. Set up the VNet, private endpoint, DNS, and connectivity **before** disabling public access, or you will lock yourself out.
+- The API-key auth-proxy remains in place regardless, giving you defense in depth.
+
+See [Use a private endpoint with an Azure Container Apps environment](https://learn.microsoft.com/en-us/azure/container-apps/how-to-use-private-endpoint) and [Configure Private Endpoints and DNS for Virtual Networks in Azure Container Apps](https://learn.microsoft.com/en-us/azure/container-apps/private-endpoints-with-dns).
 
 ## Cleanup
 

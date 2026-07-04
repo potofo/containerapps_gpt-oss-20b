@@ -129,16 +129,18 @@ graph TD
 - [x] 7. `OllamaStartup.psm1` モジュールの実装とテスト
   - [x] 7.1 `New-OllamaStartupScript` を実装する
     - `ollama serve`をバックグラウンド起動し、ヘルスチェックループ後に`ollama pull "$OLLAMA_MODEL"`（失敗時`exit 1`）→`ollama run "$OLLAMA_MODEL"`を順に実行する起動スクリプト文字列を生成する
+    - 実装時の設計変更（実機検証）: ヘルスチェックは`curl`ではなく`ollama list`を使用する（公式ollamaイメージに`curl`が同梱されないため, ollama/ollama#9781）。また関数は`sh -c`ラッパーを含まないスクリプト本体のみを返し（`sh -c`二重ネスト回避）、CRLF→LF正規化する
     - _Requirements: 5.1, 5.2, 5.3, 5.4_
   - [x] 7.2 Property 10（Ollama起動スクリプトにおけるモデル名の一致とコマンド順序）のプロパティテストを実装する
     - ランダムなモデル名文字列を100件以上生成し、`pull`と`run`の対象が同一モデル名であり`pull`が`run`より先に出現することを検証
     - _Requirements: 5.1, 5.2, 5.4_
 
 - [x] 8. `DeploymentMonitor.psm1` モジュールの実装とテスト
-  - [x] 8.1 `Get-ModelReadinessResult`, `Write-DeploymentResult` を実装する
-    - `Get-ModelReadinessResult`: 状態文字列が`"Failed"`/`"Timeout"`のとき`"Error"`を返す
-    - `Write-DeploymentResult`: `$IsComplete`が`$true`の場合のみcurl実行例を出力し、Public_EndpointのURL自体は別ステップで常に出力する
-    - _Requirements: 3.5, 5.3, 6.1, 6.2_
+  - [x] 8.1 `Get-ModelReadinessResult`, `Write-DeploymentResult`, `Write-ResultEndpointFile` を実装する
+    - `Get-ModelReadinessResult`: 状態文字列が`"Failed"`/`"Timeout"`のとき`"Error"`、`"Succeeded"`のとき`"Ready"`、それ以外は`"Pending"`を返す
+    - `Write-DeploymentResult`: `$IsComplete`が`$true`の場合のみcurl実行例を出力し、Public_EndpointのURL自体は別ステップで常に出力する。curl実行例はWindows PowerShellでそのまま実行できる形式（`curl.exe`明示、JSONの`"`を`\"`にエスケープ、`"stream":false`付与）とする
+    - `Write-ResultEndpointFile`（実装時に追加）: URL・API_Key・モデル名・STATUS（Ready/Pending）を`result-endpoint.md`へ書き出し、完了時はcurl実行例（```powershellフェンス）も併記する。`chat.py`が参照する
+    - _Requirements: 3.5, 5.3, 6.1, 6.2, 6.3_
   - [x] 8.2 Property 11（モデル準備状態判定の正しさ）のプロパティテストを実装する
     - `"Succeeded"`, `"Failed"`, `"Timeout"`, `"Pulling"`等のランダムな状態文字列を100件以上生成し、`"Failed"`/`"Timeout"`のとき常に`"Error"`を返すことを検証
     - _Requirements: 5.3_
@@ -147,9 +149,10 @@ graph TD
     - _Requirements: 6.2_
 
 - [x] 9. `ContainerAppSpec.psm1` モジュールの実装とテスト
-  - [x] 9.1 `New-ContainerAppYaml` を実装する
-    - `.env`設定値からOllama_Container（先頭定義、`docker.io/ollama/ollama:latest`）とAuth_Proxy_Container（`nginx:alpine`）の2コンテナ、`external: true`かつ`targetPort: 8080`のイングレス、GPUマッピングによる`workloadProfileName`を含むYAML文字列を生成する
-    - Ollama_Containerの起動コマンドには`OllamaStartup.psm1`の出力、Auth_Proxy_Containerの起動コマンドには`NginxConfig.psm1`の出力を埋め込む
+  - [x] 9.1 `New-ContainerAppYaml` および `New-ContainerAppSpec` を実装する
+    - `.env`設定値からOllama_Container（先頭定義、`docker.io/ollama/ollama:latest`）とAuth_Proxy_Container（`nginx:alpine`）の2コンテナ、`external: true`かつ`targetPort: 8080`のイングレス、GPUマッピングによる`workloadProfileName`を含むContainer App定義を生成する
+    - Ollama_Containerの起動コマンドには`OllamaStartup.psm1`の出力、Auth_Proxy_Containerの起動コマンドには`NginxConfig.psm1`の出力を`command: ["sh","-c"]` + `args`として埋め込む
+    - 実装時の設計変更（実機検証）: `az containerapp --yaml`が`az`(v2.87.0)の内部YAML→JSON変換不具合で必ず失敗するため、`az rest --method PUT`へJSONを直接送信する方式へ移行した。そのため実処理用に、YAMLではなくhashtable（→`ConvertTo-Json`）を返す`New-ContainerAppSpec`（`$Location`・`environmentId`を含む）を追加した。`New-ContainerAppYaml`は後方互換・テスト用として残置する
     - _Requirements: 3.1, 3.2, 3.3, 4.1, 4.3_
   - [x] 9.2 Property 6（Container AppスペックYAMLの必須構成要素）のプロパティテストを実装する
     - 有効な設定値（モデル名、GPU種別、APIキー）のランダムな組み合わせを100件以上生成し、生成YAMLが常に(a)Ollamaイメージのコンテナ定義、(b)nginxイメージのコンテナ定義、(c)`external: true`かつ`targetPort: 8080`のイングレス設定を含むことを検証
@@ -175,20 +178,22 @@ graph TD
   - [x] 10.5 リージョン×GPU_Type検証とContainer_Apps_Environment作成/再利用のロジックを実装する
     - `Test-RegionGpuSupported`で非対応時はエラー表示して中断
     - `az containerapp env show`で存在確認し、なければ`az containerapp env create`
-    - `az containerapp env workload-profile add`でGPUワークロードプロファイルを追加（既存時は再利用）
+    - `az containerapp env workload-profile add`でGPUワークロードプロファイルを追加する
+    - 実装時の設計変更（実機検証）: `workload-profile add`は冪等ではなく同名既存時にエラーで失敗するため、`az containerapp env show`の`properties.workloadProfiles`を確認し既存時はコマンドをスキップする。また`Consumption-GPU-*`は`--min-nodes`/`--max-nodes`非対応のため指定しない
     - _Requirements: 2.3, 2.4, 2.5_
   - [x] 10.6 Container_App作成/更新のロジックを実装する
-    - `ContainerAppSpec.psm1`でYAMLを生成し、`az containerapp show`で存在確認後、`az containerapp create --yaml`または`az containerapp update --yaml`を実行する
-    - `update`失敗時はエラーをログに記録し、後続手順（Public_Endpoint表示等）を継続する（Property 13の判定ロジックをここで利用）
+    - `ContainerAppSpec.psm1`の`New-ContainerAppSpec`でリソース定義（hashtable）を生成→`ConvertTo-Json`し、`az containerapp show`で存在確認後、`az rest --method PUT`（ARM REST API `Microsoft.App/containerApps`, api-version `2024-03-01`）で作成/更新する（`az containerapp --yaml`不具合の回避。task 9.1参照）。事前に`az containerapp env show --query id`で`environmentId`を取得してConfigに含める
+    - 新規作成失敗時はエラー表示して中断、既存更新失敗時はエラーをログに記録し後続手順（Public_Endpoint表示等）を継続する（Property 13の判定ロジックをここで利用）
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 4.1, 4.2, 4.3, 7.2_
   - [x] 10.7 Property 13（Container_App更新失敗時の後続処理継続性）のプロパティテストを実装する
     - ランダムなブール値（更新成功/失敗）を100件以上生成し、値に関わらず常に後続処理が実行される判定になることを検証
     - _Requirements: 7.2_
   - [x] 10.8 Public_Endpoint表示とモデル準備確認・完了時の出力を実装する
-    - `az containerapp show --query properties.configuration.ingress.fqdn`でURLを取得し、GPU割当や後続手順の成否に関わらず表示する
-    - `az containerapp logs show`をポーリングして`DeploymentMonitor.psm1`の`Get-ModelReadinessResult`でモデル準備状態を判定し、失敗/タイムアウト時はエラー表示して中断する
-    - 成功時、`Write-DeploymentResult`でcurl実行例を表示する
-    - _Requirements: 3.5, 5.1, 5.2, 5.3, 5.4, 6.1, 6.2_
+    - `az containerapp show --query properties.configuration.ingress.fqdn`でURLを取得し、GPU割当や後続手順の成否に関わらず表示する（`az rest`作成直後の結果整合性でFQDNが空になる場合に備え短間隔でリトライする）
+    - 取得したURL・API_Key・モデル名を`Write-ResultEndpointFile`で`result-endpoint.md`に書き出す（この時点ではSTATUS: Pending）
+    - `az containerapp show --query properties.runningStatus`をポーリングして`DeploymentMonitor.psm1`の`Get-ModelReadinessResult`でモデル準備状態を判定し、失敗/タイムアウト時はエラー表示して中断する（当初設計の`az containerapp logs show`監視ではなく`runningStatus`監視を採用）
+    - 成功時、`Write-DeploymentResult`でcurl実行例を表示し、`result-endpoint.md`を完了状態（STATUS: Ready）で更新する
+    - _Requirements: 3.5, 5.1, 5.2, 5.3, 5.4, 6.1, 6.2, 6.3_
 
 - [x] 11. `teardown.ps1` の実装
   - [x] 11.1 削除確認プロンプトとリソースグループ削除ロジックを実装する
@@ -207,7 +212,7 @@ graph TD
   - [x] 13.1 英語版 `README.md` を作成する
     - 事前準備セクションに、対話型`az login`を実行者が事前に一度実行しておく必要があること、`deploy.ps1`がログイン処理を代行しないこと、未ログイン時はエラーで中断することを明記する
     - `.env.example`を`.env`にコピーして値を編集する手順を事前準備の一部として記載する
-    - `deploy.ps1`/`teardown.ps1`の実行手順、curl呼び出し例を記載する
+    - `deploy.ps1`/`teardown.ps1`の実行手順、curl呼び出し例、`chat.py`チャットクライアントの使い方、課金（サーバーレスGPUの従量課金・スケールトゥーゼロ・ストレージ）に関する説明を記載する
     - _Requirements: 9.1, 9.2, 9.3, 9.4_
   - [x] 13.2 日本語版 `README.ja-JP.md` を作成する
     - README.mdと同一の内容（事前準備・利用手順・クリーンアップ手順）を日本語で記載する
@@ -217,8 +222,20 @@ graph TD
   - requirements.md / design.md の主要仕様（構成概要、.envパラメータ一覧、GPU/リージョン対応表、デプロイフロー、APIキー認証方式、クリーンアップ手順）を`container-apps_specs.md`に要約として記載する
   - _Requirements: 1.1, 1.2, 2.5, 3.2, 4.1_
 
+- [x] 15. `chat.py` チャットクライアントの実装（実装時に追加）
+  - `result-endpoint.md`（URL/API_KEY/MODEL/STATUS）を解析し、`X-API-Key`ヘッダーを付与して`/api/generate`エンドポイントと対話するテキストチャットCLIを実装する
+  - Python 3.8+ の標準ライブラリのみで動作させる（`urllib`等、追加インストール不要）。ストリーミング/非ストリーミング表示、`--file`/`--no-stream`/`--timeout`オプションに対応する
+  - _Requirements: 6.1, 6.4_
+
 ## Notes
 
 - 各タスクの `_Requirements:_` はrequirements.mdの要件番号（例: `1.1`はRequirement 1のAcceptance Criteria 1）に対応する。
 - プロパティテストはPester + `Get-Random`ベースの自作ジェネレータで実装し、各テストコメントに `# Feature: ollama-gpt-oss-container-apps, Property {number}` を付与して design.md のCorrectness Propertiesと対応付ける。
 - 実際のAzure環境への手動デプロイ確認（curl実行例の実行）は自動テストの対象外とし、README記載の手順で利用者が検証する。
+- **実装時に判明した設計変更（実機のAzure環境での検証による、design.md初版からの逸脱）**:
+  - Container App作成/更新を `az containerapp create/update --yaml` から `az rest --method PUT`（ARM REST API直接呼び出し）へ変更（`az` v2.87.0 の YAML→JSON 変換不具合の回避）。これに伴い `ContainerAppSpec.psm1` に `New-ContainerAppSpec`（hashtable/JSON生成）を追加し、`New-ContainerAppYaml` は残置。
+  - GPUワークロードプロファイルは同名既存時に `workload-profile add` が失敗するため、既存時はスキップする。`--min-nodes`/`--max-nodes` は Consumption GPU では非対応のため不使用。
+  - モデル準備確認は `az containerapp logs show` ではなく `properties.runningStatus` のポーリングで判定。
+  - Ollama起動スクリプトのヘルスチェックは `curl` ではなく `ollama list`（公式イメージに`curl`非同梱）。起動スクリプト（Ollama/nginx）は `sh -c` ラッパーを含まない本体のみを返す構成へ変更（`sh -c` 二重ネスト回避）＋CRLF→LF正規化。
+  - `deploy.ps1`/`teardown.ps1` は `$ErrorActionPreference = 'Continue'`（PS 5.1 で外部コマンドのstderrが`$LASTEXITCODE`チェック前にスローされる問題の回避、エラー判定は明示的な`$LASTEXITCODE`チェックに一元化）。
+  - 成果物として `result-endpoint.md`（接続情報の書き出し）と `chat.py`（チャットクライアント）を追加（task 8.1・15）。
